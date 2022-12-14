@@ -1,0 +1,104 @@
+WHITESPACE = _{ " " | "\t" }
+COMMENT = _{ "." ~ ANY* ~ NEWLINE? }
+
+PrefixFlag = { "+" | "@" | "#" }
+SuffixFlag = { ",X" }
+
+Directive = {
+    "START" | 
+    "END"   | 
+    "BYTE"  | 
+    "WORD"  | 
+    "RESB"  | 
+    "RESW"  | 
+    "BASE"
+}
+
+Mnemonic = {
+    "ADD" |
+    "ADDF" |
+    "ADDR" |
+    "AND" |
+    "CLEAR" |
+    "COMP" |
+    "COMPF" |
+    "COMPR" |
+    "DIV" |
+    "DIVF" |
+    "DIVR" |
+    "FIX" |
+    "FLOAT" |
+    "HIO" |
+    "JEQ" |
+    "JGT" |
+    "JLT" |
+    "JSUB" |
+    "LDA" |
+    "LDB" |
+    "LDCH" |
+    "LDF" |
+    "LDL" |
+    "LDS" |
+    "LDT" |
+    "LDX" |
+    "LPS" |
+    "MUL" |
+    "MULF" |
+    "MULR" |
+    "NORM" |
+    "OR" |
+    "RD" |
+    "RMO" |
+    "RSUB" |
+    "SHIFTL" |
+    "SHIFTR" |
+    "SIO" |
+    "SSK" |
+    "STA" |
+    "STB" |
+    "STCH" |
+    "STF" |
+    "STI" |
+    "STL" |
+    "STS" |
+    "STSW" |
+    "STT" |
+    "STX" |
+    "SUB" |
+    "SUBF" |
+    "SUBR" |
+    "SVC" |
+    "TD" |
+    "TIO" |
+    "TIX" |
+    "TIXR" |
+    "WD" |
+    "J"
+}
+
+Register = { "A" | "X" | "L" | "B" | "S" | "T" | "F" }
+
+RegisterPair = ${ Register ~ "," ~ Register }
+
+Integer = @{
+    "-"? ~ ASCII_DIGIT+ |
+    "X'" ~ ASCII_HEX_DIGIT+ ~"'"
+}
+
+String = @{ "C'" ~ (!"'" ~ ANY)* ~ "'"  }
+
+Literal = { String | Integer }
+
+Symbol = { ASCII_ALPHA+ }
+
+Command = { 
+    (Directive | Mnemonic)
+}
+
+Token = ${ PrefixFlag? ~ (Literal | RegisterPair | Symbol | Command ) ~ SuffixFlag? }
+
+Expression = ${ Token ~ (WHITESPACE ~ Token){,2} }
+
+Program = {
+    SOI ~ NEWLINE* ~ (Expression ~ NEWLINE+)* ~ Expression? ~ EOI
+}
