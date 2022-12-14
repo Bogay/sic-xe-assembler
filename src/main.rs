@@ -1,4 +1,3 @@
-mod command;
 mod sic_xe;
 
 #[macro_use]
