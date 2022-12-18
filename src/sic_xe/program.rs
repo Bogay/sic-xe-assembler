@@ -1,4 +1,4 @@
-use super::{Command, Directive, Expression, Flag, Format, Literal, Operand};
+use super::{token::Register, Command, Directive, Expression, Flag, Format, Literal, Operand};
 use crate::Rule;
 use pest::iterators::Pair;
 use std::{
@@ -6,14 +6,6 @@ use std::{
     fmt::{Display, Formatter},
     io::{self, Write},
 };
-
-fn to_hex(s: &[u8]) -> String {
-    let mut ret = String::with_capacity(s.len() * 2);
-    for b in s {
-        ret.push_str(&format!("{b:02X}"));
-    }
-    ret
-}
 
 #[derive(Debug)]
 pub struct SicXeProgram<'a> {
@@ -65,10 +57,7 @@ impl<'a> SicXeProgram<'a> {
                     Directive::Byte => {
                         let operand = expr.operand().unwrap();
                         match operand {
-                            Operand::Literal(lit) => match lit {
-                                Literal::String(s) => ret.push(to_hex(s.as_bytes())),
-                                Literal::Integer(i) => ret.push(format!("{i:02X}")),
-                            },
+                            Operand::Literal(lit) => ret.push(lit.opcode()),
                             _ => return Err("Invalid expression. BYTE should follows literal"),
                         }
                     }
@@ -106,46 +95,113 @@ impl<'a> SicXeProgram<'a> {
                         }
                         Format::Two => {
                             code |= opcode << 8;
-                            let Operand::RegisterPair((r1, r2)) = expr.operand().unwrap() else {
-                                return Err("Invalid expression. Format two instruction should follows register pair");
-                             };
-
+                            let (r1, r2) = match expr.operand().unwrap() {
+                                Operand::RegisterPair((r1, r2)) => (r1, r2),
+                                Operand::Register(reg) => (reg, &Register::A),
+                                _ => return Err("Invalid expression. Format two instruction should follows register"),
+                            };
                             code |= ((*r1 as u32) << 4) | (*r2 as u32);
                             ret.push(format!("{: <04X}", code));
                         }
                         Format::ThreeAndFour => {
-                            if expr.is_set(Flag::E) {
+                            let is_format_4 = expr.is_set(Flag::E);
+                            if is_format_4 {
                                 code |= (opcode & 0xfc) << 24;
                             } else {
                                 code |= (opcode & 0xfc) << 16;
                             }
 
                             let mut stat = expr.stat();
-                            let addr;
-
-                            match expr.operand().unwrap() {
-                                Operand::Literal(Literal::Integer(n)) => {
-                                    addr = *n as u32;
-                                }
-                                Operand::Symbol(sym) => {
-                                    let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
-                                    if expr.is_set(Flag::E) {
-                                        addr = (*address as u32) & ((1u32 << 20) - 1) as u32;
-                                    } else {
-                                        let (bias, flag) = Self::get_addr(*address, pc, base);
-
-                                        if let Some(flag) = flag {
-                                            stat |= flag;
-                                            addr = (bias as u32) & ((1u32 << 12) - 1) as u32;
-                                        } else {
-                                            addr = (bias as u32) & ((1u32 << 12) - 1) as u32;
+                            let addr = {
+                                if stat.contains(Flag::I) {
+                                    // immediate mode
+                                    let disp = match expr.operand().unwrap() {
+                                        Operand::Literal(lit) => match lit {
+                                            Literal::Integer(n) => *n as u32,
+                                            Literal::Byte(b) => *b as u32,
+                                            _ => return Err("Register"),
+                                        },
+                                        Operand::Symbol(sym) => {
+                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            if is_format_4 {
+                                                (*address as u32) & ((1u32 << 20) - 1) as u32
+                                            } else {
+                                                let (bias, flag) =
+                                                    Self::get_addr(*address, pc, base);
+                                                if let Some(flag) = flag {
+                                                    stat |= flag;
+                                                }
+                                                (bias as u32) & ((1u32 << 12) - 1) as u32
+                                            }
                                         }
+                                        _ => return Err("Register"),
+                                    };
+                                    disp
+                                } else if stat.contains(Flag::N) {
+                                    // indirect addressing
+                                    match expr.operand().unwrap() {
+                                        Operand::Symbol(sym) => {
+                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            if is_format_4 {
+                                                (*address as u32) & ((1u32 << 20) - 1) as u32
+                                            } else {
+                                                let (bias, flag) =
+                                                    Self::get_addr(*address, pc, base);
+                                                if let Some(flag) = flag {
+                                                    stat |= flag;
+                                                }
+                                                (bias as u32) & ((1u32 << 12) - 1) as u32
+                                            }
+                                        }
+                                        _ => return Err("Not a symbol"),
+                                    }
+                                } else if stat.contains(Flag::X) {
+                                    // index
+                                    stat |= Flag::N | Flag::I;
+                                    match expr.operand().unwrap() {
+                                        Operand::Symbol(sym) => {
+                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            if is_format_4 {
+                                                (*address as u32) & ((1u32 << 20) - 1) as u32
+                                            } else {
+                                                let (bias, flag) =
+                                                    Self::get_addr(*address, pc, base);
+                                                if let Some(flag) = flag {
+                                                    stat |= flag;
+                                                }
+                                                (bias as u32) & ((1u32 << 12) - 1) as u32
+                                            }
+                                        }
+                                        _ => return Err("Not a symbol"),
+                                    }
+                                } else {
+                                    // simple
+                                    stat |= Flag::N | Flag::I;
+                                    match expr.operand().unwrap() {
+                                        Operand::Literal(lit) => match lit {
+                                            Literal::Integer(n) => *n as u32,
+                                            Literal::Byte(b) => *b as u32,
+                                            _ => todo!(),
+                                        },
+                                        Operand::Symbol(sym) => {
+                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            if is_format_4 {
+                                                (*address as u32) & ((1u32 << 20) - 1) as u32
+                                            } else {
+                                                let (bias, flag) =
+                                                    Self::get_addr(*address, pc, base);
+                                                if let Some(flag) = flag {
+                                                    stat |= flag;
+                                                }
+                                                (bias as u32) & ((1u32 << 12) - 1) as u32
+                                            }
+                                        }
+                                        _ => return Err("Invalid expression. register pair?"),
                                     }
                                 }
-                                _ => return Err("Invalid expression. register pair?"),
-                            }
+                            };
 
-                            if expr.is_set(Flag::E) {
+                            if is_format_4 {
                                 code |= (stat.bits() as u32) << 20;
                                 code |= addr;
                                 ret.push(format!("{: <08X}", code));
@@ -178,6 +234,10 @@ impl<'a> SicXeProgram<'a> {
         } else {
             (addr, None)
         }
+    }
+
+    pub fn expressions(&self) -> &[Expression<'a>] {
+        &self.expressions
     }
 
     pub(crate) fn texts(&self) -> &[Text] {

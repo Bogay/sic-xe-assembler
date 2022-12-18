@@ -1,14 +1,14 @@
-use super::{Command, Directive, Flag, Literal, Operand, Token};
+use super::{Command, Directive, Flag, Format, Literal, Operand};
 use crate::Rule;
 use itertools::Itertools;
 use pest::iterators::Pair;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone)]
-pub(crate) struct Expression<'a> {
+pub struct Expression<'a> {
+    label: Option<&'a str>,
     command: Command,
     operand: Option<Operand<'a>>,
-    label: Option<&'a str>,
     stat: Flag,
 }
 
@@ -57,84 +57,94 @@ impl<'a> Expression<'a> {
     }
 }
 
-impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a>
-where
-    Self: 'a,
-{
+impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
     type Error = &'a str;
 
     // FIXME: validate stat
     fn try_from(value: Pair<'a, Rule>) -> Result<Self, Self::Error> {
-        let tokens = value
-            .into_inner()
-            .map(Token::parse_with_stat)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                eprintln!("{e}");
-                "Invalid expression. (parse token)"
-            })?;
+        if value.as_rule() != Rule::Expression {
+            return Err("Input is not a expression");
+        }
 
+        let mut command = None;
+        let mut label = None;
+        let mut operand = None;
         let mut stat = Flag::empty();
-        for (_, s) in &tokens {
-            stat |= *s;
+
+        for pair in value.into_inner() {
+            match pair.as_rule() {
+                Rule::Operand => {
+                    for ppair in pair.into_inner() {
+                        match ppair.as_rule() {
+                            Rule::ImmediateAddressingMode
+                            | Rule::IndirectAddressingMode
+                            | Rule::IndexingAddressingMode => {
+                                // Safety: guaranteed by parser
+                                stat |= ppair.as_str().parse().unwrap();
+                            }
+                            Rule::Literal => {
+                                if let Ok(lit) = Literal::try_from(ppair) {
+                                    operand = Some(Operand::Literal(lit));
+                                } else {
+                                    return Err("Failed to parse literal");
+                                }
+                            }
+                            Rule::RegisterPair => {
+                                let (reg_a, reg_b) =
+                                    ppair.as_str().split(',').collect_tuple().unwrap();
+                                if let (Ok(reg_a), Ok(reg_b)) = (reg_a.parse(), reg_b.parse()) {
+                                    operand = Some(Operand::RegisterPair((reg_a, reg_b)));
+                                } else {
+                                    return Err("Failed to parse register pair");
+                                }
+                            }
+                            Rule::Symbol => {
+                                if let Some(Command::Mnemonic(mnemonic)) = &command {
+                                    if mnemonic.format() == Format::Two {
+                                        operand = Some(Operand::Register(
+                                            ppair.as_str().parse().unwrap(),
+                                        ));
+                                        continue;
+                                    }
+                                }
+                                operand = Some(Operand::Symbol(ppair.as_str()));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                Rule::Command => {
+                    for ppair in pair.into_inner() {
+                        match ppair.as_rule() {
+                            Rule::ExtendedAddressingMode => {
+                                // Safety: guaranteed by parser
+                                stat |= ppair.as_str().parse().unwrap();
+                            }
+                            Rule::Symbol => {
+                                if let Ok(cmd) = ppair.as_str().parse() {
+                                    command = Some(cmd);
+                                    // builder = builder.command(command);
+                                } else {
+                                    return Err("Unknown command");
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                Rule::Symbol => {
+                    label = Some(pair.as_str());
+                }
+                _ => unreachable!(),
+            }
         }
 
-        let tokens = tokens.into_iter().map(|(tk, _)| tk).collect::<Vec<_>>();
-
-        match tokens.len() {
-            1 => {
-                if let Token::Command(command) = &tokens[0] {
-                    Ok(Self {
-                        command: command.clone(),
-                        operand: None,
-                        label: None,
-                        stat,
-                    })
-                } else {
-                    Err("Invalid expression. Single token shuold be command")
-                }
-            }
-            2 => {
-                let (tk0, tk1) = tokens.into_iter().collect_tuple().unwrap();
-                // label (symbol) + command
-                if let (Token::Symbol(label), Token::Command(command)) = (&tk0, &tk1) {
-                    Ok(Self {
-                        command: command.clone(),
-                        operand: None,
-                        label: Some(label),
-                        stat,
-                    })
-                    // command + operand (symbol || literal || register_pair)
-                } else if let (Token::Command(command), Ok(operand)) =
-                    (&tk0, Operand::try_from(tk1.clone()))
-                {
-                    Ok(Self {
-                        command: command.clone(),
-                        operand: Some(operand),
-                        label: None,
-                        stat,
-                    })
-                } else {
-                    Err("Invalid expression")
-                }
-            }
-            3 => {
-                let (tk0, tk1, tk2) = tokens.into_iter().collect_tuple().unwrap();
-                // FIXME: return err
-                let operand = Operand::try_from(tk2.clone()).unwrap();
-                if let (Token::Symbol(lable), Token::Command(command)) = (&tk0, &tk1) {
-                    Ok(Self {
-                        command: command.clone(),
-                        operand: Some(operand),
-                        label: Some(lable),
-                        stat,
-                    })
-                } else {
-                    Err("Invalid expression")
-                }
-            }
-            _ => unreachable!("Invalid expression. Too many tokens in one line."),
-        }
+        Ok(Self {
+            command: command.unwrap(),
+            label,
+            operand,
+            stat,
+        })
     }
 }
 
@@ -147,6 +157,25 @@ impl<'a> Display for Expression<'a> {
             .map(|op| op.to_string())
             .unwrap_or_default();
         let command = self.command.name();
+
+        let before_command = self
+            .stat()
+            .contains(Flag::E)
+            .then(|| "+")
+            .unwrap_or_default();
+        let mut before_operand = self.stat().contains(Flag::N).then(|| "@");
+        if before_operand.is_none() {
+            before_operand = self.stat().contains(Flag::I).then(|| "#");
+        }
+        let before_operand = before_operand.unwrap_or_default();
+        let after_operand = self
+            .stat()
+            .contains(Flag::X)
+            .then(|| ",X")
+            .unwrap_or_default();
+        let command = format!("{before_command}{command}");
+        let operand = format!("{before_operand}{operand}{after_operand}");
+
         write!(f, "{label: >12} {command: >12} {operand: >12}")
     }
 }

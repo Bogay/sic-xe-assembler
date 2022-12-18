@@ -3,8 +3,8 @@ use std::str::FromStr;
 use crate::Rule;
 use pest::iterators::Pair;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Format {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Format {
     One,
     Two,
     ThreeAndFour,
@@ -21,7 +21,7 @@ impl Format {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Mnemonic {
+pub struct Mnemonic {
     name: &'static str,
     opcode: u8,
     format: Format,
@@ -46,7 +46,7 @@ impl Mnemonic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Directive {
+pub enum Directive {
     Start,
     End,
     Byte,
@@ -79,7 +79,7 @@ impl Directive {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Command {
+pub enum Command {
     Mnemonic(Mnemonic),
     Directive(Directive),
 }
@@ -97,7 +97,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Command {
     type Error = &'a str;
 
     fn try_from(value: Pair<'a, Rule>) -> Result<Self, Self::Error> {
-        if !matches!(value.as_rule(), Rule::Command | Rule::Directive) {
+        if !matches!(value.as_rule(), Rule::Command) {
             return Err("Input is not a command");
         }
 

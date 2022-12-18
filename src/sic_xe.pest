@@ -1,104 +1,38 @@
 WHITESPACE = _{ " " | "\t" }
 COMMENT = _{ "." ~ ANY* ~ NEWLINE? }
 
-PrefixFlag = { "+" | "@" | "#" }
-SuffixFlag = { ",X" }
-
-Directive = {
-    "START" | 
-    "END"   | 
-    "BYTE"  | 
-    "WORD"  | 
-    "RESB"  | 
-    "RESW"  | 
-    "BASE"
-}
-
-Mnemonic = {
-    "ADD" |
-    "ADDF" |
-    "ADDR" |
-    "AND" |
-    "CLEAR" |
-    "COMP" |
-    "COMPF" |
-    "COMPR" |
-    "DIV" |
-    "DIVF" |
-    "DIVR" |
-    "FIX" |
-    "FLOAT" |
-    "HIO" |
-    "JEQ" |
-    "JGT" |
-    "JLT" |
-    "JSUB" |
-    "LDA" |
-    "LDB" |
-    "LDCH" |
-    "LDF" |
-    "LDL" |
-    "LDS" |
-    "LDT" |
-    "LDX" |
-    "LPS" |
-    "MUL" |
-    "MULF" |
-    "MULR" |
-    "NORM" |
-    "OR" |
-    "RD" |
-    "RMO" |
-    "RSUB" |
-    "SHIFTL" |
-    "SHIFTR" |
-    "SIO" |
-    "SSK" |
-    "STA" |
-    "STB" |
-    "STCH" |
-    "STF" |
-    "STI" |
-    "STL" |
-    "STS" |
-    "STSW" |
-    "STT" |
-    "STX" |
-    "SUB" |
-    "SUBF" |
-    "SUBR" |
-    "SVC" |
-    "TD" |
-    "TIO" |
-    "TIX" |
-    "TIXR" |
-    "WD" |
-    "J"
-}
-
 Register = { "A" | "X" | "L" | "B" | "S" | "T" | "F" }
-
 RegisterPair = ${ Register ~ "," ~ Register }
-
-Integer = @{
-    "-"? ~ ASCII_DIGIT+ |
-    "X'" ~ ASCII_HEX_DIGIT+ ~"'"
-}
-
+Integer = @{ "-"? ~ ASCII_DIGIT+ }
 String = @{ "C'" ~ (!"'" ~ ANY)* ~ "'"  }
-
-Literal = { String | Integer }
-
+Byte = @{ "X'" ~ ASCII_HEX_DIGIT+ ~"'" }
+Literal = { String | Integer | Byte }
 Symbol = { ASCII_ALPHA+ }
 
-Command = { 
-    (Directive | Mnemonic)
+Command = ${ ExtendedAddressingMode? ~ Symbol }
+Operand = ${
+	(ImmediateAddressingMode | IndirectAddressingMode)? ~
+    (Literal  | RegisterPair | Symbol) ~
+    IndexingAddressingMode?
 }
 
-Token = ${ PrefixFlag? ~ (Literal | RegisterPair | Symbol | Command ) ~ SuffixFlag? }
+ExtendedAddressingMode = { "+" }
+ImmediateAddressingMode = { "#" }
+IndirectAddressingMode = { "@" }
+IndexingAddressingMode = { ",X" }
 
-Expression = ${ Token ~ (WHITESPACE ~ Token){,2} }
+Expression = ${
+    // label + command + operand
+    Symbol ~ WHITESPACE+ ~ Command ~ WHITESPACE+ ~ Operand |
+    // command + operand
+    Command ~ WHITESPACE+ ~ Operand |
+    // label + command
+    Symbol ~ WHITESPACE+ ~ Command |
+    // single command
+    Command
+}
 
 Program = {
     SOI ~ NEWLINE* ~ (Expression ~ NEWLINE+)* ~ Expression? ~ EOI
 }
+

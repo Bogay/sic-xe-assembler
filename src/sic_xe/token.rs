@@ -1,32 +1,42 @@
-use super::{Command, ParseError};
 use crate::Rule;
 use bitflags::bitflags;
-use itertools::Itertools;
 use pest::iterators::Pair;
 use std::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
 
-#[derive(Debug, Clone)]
-pub(crate) enum Token<'a> {
-    Literal(Literal<'a>),
-    Symbol(&'a str),
-    Command(Command),
-    RegisterPair((Register, Register)),
+fn to_hex(s: &[u8]) -> String {
+    let mut ret = String::with_capacity(s.len() * 2);
+    for b in s {
+        ret.push_str(&format!("{b:02X}"));
+    }
+    ret
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Literal<'a> {
+pub enum Literal<'a> {
     String(&'a str),
     Integer(i32),
+    Byte(u8),
+}
+
+impl<'a> Literal<'a> {
+    pub fn opcode(&self) -> String {
+        match self {
+            Literal::String(s) => to_hex(s.as_bytes()),
+            Literal::Integer(i) => format!("{i:02X}"),
+            Literal::Byte(b) => format!("{b:02X}"),
+        }
+    }
 }
 
 impl<'a> Display for Literal<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Literal::String(s) => write!(f, "{s}"),
+            Literal::String(s) => write!(f, "C'{s}'"),
             Literal::Integer(i) => write!(f, "{i}"),
+            Literal::Byte(b) => write!(f, "X'{b:02X}'"),
         }
     }
 }
@@ -40,15 +50,14 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Literal<'a> {
         }
 
         let value = value.as_str();
-
         if value.starts_with('C') {
             let value = &value[2..value.len() - 1];
             Ok(Self::String(value))
         } else if value.starts_with('X') {
             let value = &value[2..value.len() - 1];
             let value =
-                i32::from_str_radix(value, 16).map_err(|_| "Failed to parse integer literal")?;
-            Ok(Self::Integer(value))
+                u8::from_str_radix(value, 16).map_err(|_| "Failed to parse byte literal")?;
+            Ok(Self::Byte(value))
         } else {
             let value = value
                 .parse()
@@ -59,7 +68,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Literal<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Register {
+pub enum Register {
     A = 0,
     X = 1,
     L = 2,
@@ -123,104 +132,35 @@ bitflags! {
     }
 }
 
+impl FromStr for Flag {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "+" => Ok(Self::E),
+            "@" => Ok(Self::N),
+            "#" => Ok(Self::I),
+            ",X" => Ok(Self::X),
+            _ => Err("Unknown flag"),
+        }
+    }
+}
+
 impl Flag {
-    fn from_prefix(s: &str) -> Option<Self> {
-        match s {
-            "+" => Some(Self::E),
-            "@" => Some(Self::N),
-            "#" => Some(Self::I),
-            _ => None,
-        }
-    }
-    fn from_suffix(s: &str) -> Option<Self> {
-        match s {
-            ",X" => Some(Self::X),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> TryFrom<Pair<'a, Rule>> for Flag {
-    type Error = &'a str;
-
-    fn try_from(value: Pair<'a, Rule>) -> Result<Self, Self::Error> {
-        match value.as_rule() {
-            Rule::PrefixFlag => {
-                Self::from_prefix(value.as_str()).ok_or("Failed to parse prefix flag")
-            }
-            Rule::SuffixFlag => {
-                Self::from_suffix(value.as_str()).ok_or("Failed to parse suffix flag")
-            }
-            _ => Err("Input is not a flag"),
-        }
-    }
-}
-
-impl<'a> Token<'a> {
-    // FIXME: validate token
-    pub fn parse_with_stat(value: Pair<'a, Rule>) -> Result<(Self, Flag), ParseError<'a>> {
-        if value.as_rule() != Rule::Token {
-            return Err(ParseError::InvalidRule {
-                expected: Rule::Token,
-                found: value.as_rule(),
-            });
+    pub fn is_valid(self) -> bool {
+        if !(self & (Self::B | Self::P)).is_empty() {
+            return false;
         }
 
-        let mut stat = Flag::empty();
-        let mut val = None;
-        let expr = <&str>::clone(&value.as_str());
-
-        for pair in value.into_inner() {
-            match pair.as_rule() {
-                Rule::PrefixFlag | Rule::SuffixFlag => {
-                    let flag: Flag = pair.try_into().unwrap();
-                    stat |= flag;
-                }
-                Rule::Literal | Rule::RegisterPair | Rule::Symbol | Rule::Command => {
-                    if let Ok(command) = Command::from_str(pair.as_str()) {
-                        val = Some(Self::Command(command));
-                    } else if let Ok(lit) = Literal::try_from(pair.clone()) {
-                        val = Some(Self::Literal(lit));
-                    } else if let Some((reg_a, reg_b)) = pair.as_str().split(',').collect_tuple() {
-                        if let (Ok(reg_a), Ok(reg_b)) = (reg_a.parse(), reg_b.parse()) {
-                            val = Some(Self::RegisterPair((reg_a, reg_b)));
-                        } else {
-                            return Err(ParseError::InvalidExpression {
-                                rule: Rule::RegisterPair,
-                                expr: pair.as_str(),
-                            });
-                        }
-                    } else if let Ok(reg) = pair.as_str().parse() {
-                        let reg_b = Register::A;
-                        val = Some(Self::RegisterPair((reg, reg_b)));
-                    } else if pair.as_str().chars().all(|c| c.is_alphabetic()) {
-                        val = Some(Self::Symbol(pair.as_str()));
-                    } else {
-                        return Err(ParseError::InvalidExpression {
-                            rule: Rule::Token,
-                            expr: pair.as_str(),
-                        });
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        if let Some(val) = val {
-            Ok((val, stat))
-        } else {
-            Err(ParseError::InvalidExpression {
-                rule: Rule::Token,
-                expr,
-            })
-        }
+        true
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Operand<'a> {
+pub enum Operand<'a> {
     Literal(Literal<'a>),
     Symbol(&'a str),
+    Register(Register),
     RegisterPair((Register, Register)),
 }
 
@@ -229,20 +169,8 @@ impl<'a> Display for Operand<'a> {
         match self {
             Operand::Literal(lit) => write!(f, "{lit}"),
             Operand::Symbol(sym) => write!(f, "{sym}"),
-            Operand::RegisterPair((a, b)) => write!(f, "({a}, {b})"),
-        }
-    }
-}
-
-impl<'a> TryFrom<Token<'a>> for Operand<'a> {
-    type Error = &'a str;
-
-    fn try_from(value: Token<'a>) -> Result<Self, Self::Error> {
-        match value {
-            Token::Literal(lit) => Ok(Self::Literal(lit.clone())),
-            Token::Symbol(sym) => Ok(Self::Symbol(<&str>::clone(&sym))),
-            Token::RegisterPair(regs) => Ok(Self::RegisterPair(regs)),
-            Token::Command(_) => Err("Command can not be a operand"),
+            Operand::RegisterPair((a, b)) => write!(f, "{a},{b}"),
+            Operand::Register(reg) => write!(f, "{reg}"),
         }
     }
 }
