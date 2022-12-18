@@ -161,17 +161,17 @@ impl<'a> Display for Expression<'a> {
         let before_command = self
             .stat()
             .contains(Flag::E)
-            .then(|| "+")
+            .then_some("+")
             .unwrap_or_default();
-        let mut before_operand = self.stat().contains(Flag::N).then(|| "@");
+        let mut before_operand = self.stat().contains(Flag::N).then_some("@");
         if before_operand.is_none() {
-            before_operand = self.stat().contains(Flag::I).then(|| "#");
+            before_operand = self.stat().contains(Flag::I).then_some("#");
         }
         let before_operand = before_operand.unwrap_or_default();
         let after_operand = self
             .stat()
             .contains(Flag::X)
-            .then(|| ",X")
+            .then_some(",X")
             .unwrap_or_default();
         let command = format!("{before_command}{command}");
         let operand = format!("{before_operand}{operand}{after_operand}");

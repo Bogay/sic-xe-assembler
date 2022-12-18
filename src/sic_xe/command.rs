@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::Rule;
 use pest::iterators::Pair;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     One,
     Two,
@@ -45,7 +45,7 @@ impl Mnemonic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Directive {
     Start,
     End,
