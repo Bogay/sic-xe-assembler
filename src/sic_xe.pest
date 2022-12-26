@@ -7,7 +7,7 @@ Integer = @{ "-"? ~ ASCII_DIGIT+ }
 String = @{ "C'" ~ (!"'" ~ ANY)* ~ "'"  }
 Byte = @{ "X'" ~ ASCII_HEX_DIGIT+ ~"'" }
 Literal = { String | Integer | Byte }
-Symbol = { ASCII_ALPHA+ }
+Symbol = @{ ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
 
 Command = ${ ExtendedAddressingMode? ~ Symbol }
 Operand = ${
