@@ -133,7 +133,11 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                     }
                 }
                 Rule::Symbol => {
-                    label = Some(pair.as_str());
+                    let expr = pair.as_str();
+                    if expr.parse::<Command>().is_ok() {
+                        return Err("Label can not be the same as opcode or directive");
+                    }
+                    label = Some(expr);
                 }
                 _ => unreachable!(),
             }
@@ -177,5 +181,20 @@ impl<'a> Display for Expression<'a> {
         let operand = format!("{before_operand}{operand}{after_operand}");
 
         write!(f, "{label: >12} {command: >12} {operand: >12}")
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SicXeParser;
+    use pest::Parser;
+
+    #[test]
+    fn label_is_not_allowed_eq_opcde_or_directive() {
+        let expression = SicXeParser::parse(Rule::Expression, "ADD ADD #1")
+            .unwrap()
+            .next()
+            .unwrap();
+        Expression::try_from(expression).unwrap_err();
     }
 }
