@@ -2,26 +2,38 @@ mod sic_xe;
 
 #[macro_use]
 extern crate pest_derive;
-use std::io::stdout;
-
 use crate::sic_xe::SicXeProgram;
+use clap::Parser as ClapParser;
 use pest::Parser;
+use std::{fs, io::stdout, path::PathBuf};
 
 #[derive(Parser)]
 #[grammar = "sic_xe.pest"]
 struct SicXeParser;
 
+#[derive(clap::Parser)]
+struct Cli {
+    /// Path to source code
+    file: PathBuf,
+    /// Print object program
+    #[arg(long)]
+    object: bool,
+}
+
 fn main() {
-    let s = include_str!("../test_input.asm");
-    let pair = SicXeParser::parse(Rule::Program, s)
+    let cli = Cli::parse();
+    let s = fs::read_to_string(cli.file).expect("Failed to reading input file");
+    let pair = SicXeParser::parse(Rule::Program, &s)
         .unwrap()
         .next()
         .unwrap();
-    let program: SicXeProgram = SicXeProgram::try_from(pair).unwrap();
+    let program = SicXeProgram::try_from(pair).unwrap();
 
-    program.prettry_print(stdout()).unwrap();
-    println!("\n==========\n");
-    println!("{}", program.opcode());
+    if cli.object {
+        println!("{}", program.object_code());
+    } else {
+        program.prettry_print(stdout()).unwrap();
+    }
 }
 
 #[cfg(test)]

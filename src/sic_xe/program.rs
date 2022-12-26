@@ -276,7 +276,7 @@ impl<'a> SicXeProgram<'a> {
         Ok(())
     }
 
-    pub fn opcode(&self) -> String {
+    pub fn object_code(&self) -> String {
         [format!("{}\n", self.header())]
             .into_iter()
             .chain(self.texts().iter().map(|text| format!("{}\n", text)))
