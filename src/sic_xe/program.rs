@@ -256,10 +256,10 @@ impl<'a> SicXeProgram<'a> {
         &self.symbol_table
     }
 
-    pub fn prettry_print(&self, mut f: impl Write) -> io::Result<()> {
+    pub fn pretty_print(&self, mut f: impl Write) -> io::Result<()> {
         writeln!(
             f,
-            "{:>04} {:>08} {:>12} {:>12} {:>12} opcode",
+            "{:>04}  {:>08}  {:<8}  {:<12}  {:<12}  object code",
             "line", "address", "label", "operate", "operand"
         )?;
 
@@ -267,7 +267,7 @@ impl<'a> SicXeProgram<'a> {
         let mut line = 1;
         for text in self.texts() {
             for (expr, opcode) in text.expressions() {
-                writeln!(f, "{:>04} {:>8X} {} {:>}", line, addr, expr, opcode)?;
+                writeln!(f, "{:>04}  {:>8X}  {}  {:>}", line, addr, expr, opcode)?;
                 addr += expr.len() as u64;
                 line += 1;
             }

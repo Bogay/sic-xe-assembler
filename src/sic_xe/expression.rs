@@ -180,7 +180,7 @@ impl<'a> Display for Expression<'a> {
         let command = format!("{before_command}{command}");
         let operand = format!("{before_operand}{operand}{after_operand}");
 
-        write!(f, "{label: >12} {command: >12} {operand: >12}")
+        write!(f, "{label: <8}  {command: <12}  {operand: <12}")
     }
 }
 #[cfg(test)]

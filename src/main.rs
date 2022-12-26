@@ -32,7 +32,7 @@ fn main() {
     if cli.object {
         println!("{}", program.object_code());
     } else {
-        program.prettry_print(stdout()).unwrap();
+        program.pretty_print(stdout()).unwrap();
     }
 }
 
