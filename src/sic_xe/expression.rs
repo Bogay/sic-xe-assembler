@@ -1,13 +1,17 @@
-use super::{Command, Directive, Flag, Format, Literal, Operand};
+use super::{Command, Directive, Flag, Format, Literal, Operand, ParseError};
 use crate::Rule;
 use itertools::Itertools;
 use pest::iterators::Pair;
-use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::{Display, Formatter},
+};
 
 #[derive(Debug, Clone)]
 pub struct Expression<'a> {
     label: Option<&'a str>,
-    command: Command,
+    command: Command<'a>,
     operand: Option<Operand<'a>>,
     stat: Flag,
 }
@@ -15,7 +19,9 @@ pub struct Expression<'a> {
 impl<'a> Expression<'a> {
     pub fn len(&self) -> usize {
         match &self.command {
-            Command::Mnemonic(mnemonic) => mnemonic.len() + self.stat.contains(Flag::E) as usize,
+            Command::Mnemonic(mnemonic) => {
+                mnemonic.len() + /* Format 4 has 1 extra byte */ self.stat.contains(Flag::E) as usize
+            }
             Command::Directive(directive) => match directive {
                 Directive::ResW | Directive::ResB => {
                     if let Some(Operand::Literal(Literal::Integer(size))) = self.operand {
@@ -33,6 +39,7 @@ impl<'a> Expression<'a> {
                 }
                 _ => directive.len(),
             },
+            Command::DeclareLiteral { lit, .. } => lit.len(),
         }
     }
 
@@ -55,15 +62,36 @@ impl<'a> Expression<'a> {
     pub fn stat(&self) -> Flag {
         self.stat
     }
+
+    pub fn extra_expression(&self) -> Option<Self> {
+        let operand = self.operand.clone();
+        if let Some(Operand::DeclareLiteral { lit, id }) = operand {
+            let command = Command::DeclareLiteral {
+                name: lit.to_string(),
+                lit,
+                id,
+            };
+            let label = Some("*");
+
+            Some(Expression {
+                label,
+                command,
+                operand: None,
+                stat: Flag::empty(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
-    type Error = &'a str;
+    type Error = ParseError<'a>;
 
     // FIXME: validate stat
     fn try_from(value: Pair<'a, Rule>) -> Result<Self, Self::Error> {
         if value.as_rule() != Rule::Expression {
-            return Err("Input is not a expression");
+            return Err(ParseError::Custom("Input is not a expression"));
         }
 
         let mut command = None;
@@ -86,7 +114,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                                 if let Ok(lit) = Literal::try_from(ppair) {
                                     operand = Some(Operand::Literal(lit));
                                 } else {
-                                    return Err("Failed to parse literal");
+                                    return Err(ParseError::Custom("Failed to parse literal"));
                                 }
                             }
                             Rule::RegisterPair => {
@@ -95,7 +123,9 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                                 if let (Ok(reg_a), Ok(reg_b)) = (reg_a.parse(), reg_b.parse()) {
                                     operand = Some(Operand::RegisterPair((reg_a, reg_b)));
                                 } else {
-                                    return Err("Failed to parse register pair");
+                                    return Err(ParseError::Custom(
+                                        "Failed to parse register pair",
+                                    ));
                                 }
                             }
                             Rule::Symbol => {
@@ -108,6 +138,19 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                                     }
                                 }
                                 operand = Some(Operand::Symbol(ppair.as_str()));
+                            }
+                            Rule::DeclareLiteral => {
+                                let ppair = ppair.into_inner().next().unwrap();
+                                if let Ok(lit) = Literal::try_from(ppair) {
+                                    let mut h = DefaultHasher::new();
+                                    lit.to_string().hash(&mut h);
+                                    let id = format!("{lit}-{}", h.finish());
+                                    operand = Some(Operand::DeclareLiteral { lit, id });
+                                } else {
+                                    return Err(ParseError::Custom(
+                                        "Failed to parse declaring literal",
+                                    ));
+                                }
                             }
                             _ => unreachable!(),
                         }
@@ -123,9 +166,11 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                             Rule::Symbol => {
                                 if let Ok(cmd) = ppair.as_str().parse() {
                                     command = Some(cmd);
-                                    // builder = builder.command(command);
                                 } else {
-                                    return Err("Unknown command");
+                                    return Err(ParseError::InvalidExpression {
+                                        rule: Rule::Command,
+                                        expr: ppair.as_str(),
+                                    });
                                 }
                             }
                             _ => unreachable!(),
@@ -135,7 +180,9 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Expression<'a> {
                 Rule::Symbol => {
                     let expr = pair.as_str();
                     if expr.parse::<Command>().is_ok() {
-                        return Err("Label can not be the same as opcode or directive");
+                        return Err(ParseError::Custom(
+                            "Label can not be the same as opcode or directive",
+                        ));
                     }
                     label = Some(expr);
                 }

@@ -22,11 +22,20 @@ pub enum Literal<'a> {
 }
 
 impl<'a> Literal<'a> {
-    pub fn opcode(&self) -> String {
+    pub fn objcode(&self) -> String {
         match self {
             Literal::String(s) => to_hex(s.as_bytes()),
             Literal::Integer(i) => format!("{i:02X}"),
             Literal::Byte(b) => format!("{b:02X}"),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Literal::String(s) => s.len(),
+            // TODO: Does integers always have 3 bytes in SIC/XE?
+            Literal::Integer(_) => 3,
+            Literal::Byte(_) => 1,
         }
     }
 }
@@ -158,10 +167,16 @@ impl Flag {
 
 #[derive(Debug, Clone)]
 pub enum Operand<'a> {
+    /// C'EOF' | X'05' | 4096
     Literal(Literal<'a>),
+    /// Sym
     Symbol(&'a str),
+    /// R0
     Register(Register),
+    /// R0,R1
     RegisterPair((Register, Register)),
+    /// ={lit}
+    DeclareLiteral { lit: Literal<'a>, id: String },
 }
 
 impl<'a> Display for Operand<'a> {
@@ -171,6 +186,7 @@ impl<'a> Display for Operand<'a> {
             Operand::Symbol(sym) => write!(f, "{sym}"),
             Operand::RegisterPair((a, b)) => write!(f, "{a},{b}"),
             Operand::Register(reg) => write!(f, "{reg}"),
+            Operand::DeclareLiteral { lit, .. } => write!(f, "={lit}"),
         }
     }
 }

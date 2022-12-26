@@ -18,6 +18,9 @@ struct Cli {
     /// Print object program
     #[arg(long)]
     object: bool,
+    /// Debug
+    #[arg(long)]
+    debug: bool,
 }
 
 fn main() {
@@ -27,6 +30,9 @@ fn main() {
         .unwrap()
         .next()
         .unwrap();
+    if cli.debug {
+        println!("{:#?}", pair);
+    }
     let program = SicXeProgram::try_from(pair).unwrap();
 
     if cli.object {
@@ -51,8 +57,12 @@ mod tests {
     }
 
     #[test]
-    fn test_program() {
-        SicXeParser::parse(Rule::Program, "COPY\tSTART\t0\n").unwrap();
-        SicXeParser::parse(Rule::Program, include_str!("../test_input.asm")).unwrap();
+    fn test_simple_program() {
+        SicXeParser::parse(Rule::Program, include_str!("../test_code/simple.asm")).unwrap();
+    }
+
+    #[test]
+    fn test_program_with_literal() {
+        SicXeParser::parse(Rule::Program, include_str!("../test_code/lit.asm")).unwrap();
     }
 }

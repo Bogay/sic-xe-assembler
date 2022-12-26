@@ -9,11 +9,15 @@ Byte = @{ "X'" ~ ASCII_HEX_DIGIT+ ~"'" }
 Literal = { String | Integer | Byte }
 Symbol = @{ ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
 
-Command = ${ ExtendedAddressingMode? ~ Symbol }
+Command = ${ (ExtendedAddressingMode? ~ Symbol) }
+DeclareLiteral = ${ "=" ~ Literal }
 Operand = ${
-	(ImmediateAddressingMode | IndirectAddressingMode)? ~
-    (Literal  | RegisterPair | Symbol) ~
-    IndexingAddressingMode?
+	DeclareLiteral |
+    (
+        (ImmediateAddressingMode | IndirectAddressingMode)? ~
+        (Literal  | RegisterPair | Symbol) ~
+        IndexingAddressingMode?
+    )
 }
 
 ExtendedAddressingMode = { "+" }

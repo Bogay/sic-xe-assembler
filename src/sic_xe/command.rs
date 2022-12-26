@@ -3,6 +3,8 @@ use std::str::FromStr;
 use crate::Rule;
 use pest::iterators::Pair;
 
+use super::Literal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     One,
@@ -54,6 +56,7 @@ pub enum Directive {
     ResB,
     ResW,
     Base,
+    LtOrg,
 }
 
 impl Directive {
@@ -66,12 +69,13 @@ impl Directive {
             Directive::ResB => "RESB",
             Directive::ResW => "RESW",
             Directive::Base => "BASE",
+            Directive::LtOrg => "LTORG",
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
-            Self::Base | Self::Start | Self::End => 0,
+            Self::Base | Self::Start | Self::End | Self::LtOrg => 0,
             Self::Byte | Self::ResB => 1,
             Self::Word | Self::ResW => 3,
         }
@@ -79,21 +83,27 @@ impl Directive {
 }
 
 #[derive(Debug, Clone)]
-pub enum Command {
+pub enum Command<'a> {
     Mnemonic(Mnemonic),
     Directive(Directive),
+    DeclareLiteral {
+        lit: Literal<'a>,
+        name: String,
+        id: String,
+    },
 }
 
-impl Command {
+impl<'a> Command<'a> {
     pub fn name(&self) -> &str {
         match self {
             Self::Mnemonic(m) => m.name(),
             Self::Directive(d) => d.name(),
+            Self::DeclareLiteral { name, .. } => name,
         }
     }
 }
 
-impl<'a> TryFrom<Pair<'a, Rule>> for Command {
+impl<'a> TryFrom<Pair<'a, Rule>> for Command<'a> {
     type Error = &'a str;
 
     fn try_from(value: Pair<'a, Rule>) -> Result<Self, Self::Error> {
@@ -105,7 +115,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for Command {
     }
 }
 
-impl FromStr for Command {
+impl<'a> FromStr for Command<'a> {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -130,6 +140,7 @@ impl FromStr for Command {
             "RESB" => decl_command!(ResB),
             "RESW" => decl_command!(ResW),
             "BASE" => decl_command!(Base),
+            "LTORG" => decl_command!(LtOrg),
             "ADD" => decl_command!(ADD, 0x18, ThreeAndFour),
             "ADDF" => decl_command!(ADDF, 0x58, ThreeAndFour),
             "ADDR" => decl_command!(ADDR, 0x90, Two),

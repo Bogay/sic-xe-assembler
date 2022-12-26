@@ -1,8 +1,11 @@
-use super::{token::Register, Command, Directive, Expression, Flag, Format, Literal, Operand};
+use super::{
+    token::Register, Command, Directive, Expression, Flag, Format, Literal, Operand, ParseError,
+};
 use crate::Rule;
+use itertools::Itertools;
 use pest::iterators::Pair;
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{hash_map, HashMap, VecDeque},
     fmt::{Display, Formatter},
     io::{self, Write},
 };
@@ -10,7 +13,7 @@ use std::{
 #[derive(Debug)]
 pub struct SicXeProgram<'a> {
     expressions: Vec<Expression<'a>>,
-    symbol_table: HashMap<&'a str, u64>,
+    symbol_table: HashMap<String, u64>,
     header: Header<'a>,
     end: End,
     texts: Vec<Text<'a>>,
@@ -18,52 +21,114 @@ pub struct SicXeProgram<'a> {
 
 impl<'a> SicXeProgram<'a> {
     fn build_symbol_table(
-        expressions: &[Expression<'a>],
+        expressions: Vec<Expression<'a>>,
         start_addr: u64,
-    ) -> Result<HashMap<&'a str, u64>, &'a str> {
+    ) -> Result<(HashMap<String, u64>, Vec<Expression<'a>>), ParseError<'a>> {
         let mut table = HashMap::new();
         let mut addr = start_addr;
+        let mut lit_pool: Vec<Expression> = vec![];
 
-        for expr in expressions {
-            if let Some(label) = expr.label() {
-                match table.entry(label) {
-                    hash_map::Entry::Occupied(_) => return Err("Duplicated symbol"),
-                    hash_map::Entry::Vacant(ent) => {
-                        ent.insert(addr);
+        let mut expressions = expressions
+            .into_iter()
+            .map(|expr| {
+                let mut tmp_exprs = VecDeque::new();
+
+                if matches!(expr.command(), Command::Directive(Directive::LtOrg)) {
+                    for lit in lit_pool.drain(..) {
+                        // Assign addr for each literal declaring expressions
+                        let id = match lit.command() {
+                            Command::DeclareLiteral { id, .. } => id.clone(),
+                            _ => unreachable!("Build symbol for literal declaring expressions"),
+                        };
+                        match table.entry(id) {
+                            // The expression has been created
+                            hash_map::Entry::Occupied(_) => {
+                                continue;
+                            }
+                            hash_map::Entry::Vacant(ent) => {
+                                ent.insert(addr);
+                            }
+                        }
+                        addr += lit.len() as u64;
+                        tmp_exprs.push_back(lit);
                     }
                 }
-            }
-            addr += expr.len() as u64;
-        }
 
-        Ok(table)
+                if let Some(e) = expr.clone().extra_expression() {
+                    lit_pool.push(e);
+                }
+
+                if let Some(label) = expr.label() {
+                    match table.entry(label.to_string()) {
+                        hash_map::Entry::Occupied(ent) => {
+                            return Err(ParseError::DupSymbol(ent.key().to_string()))
+                        }
+                        hash_map::Entry::Vacant(ent) => {
+                            ent.insert(addr);
+                        }
+                    }
+                }
+
+                addr += expr.len() as u64;
+                tmp_exprs.push_front(expr);
+                Ok(tmp_exprs)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect_vec();
+
+        let end = expressions.pop().unwrap();
+        for lit in lit_pool.drain(..) {
+            // Assign addr for each literal declaring expressions
+            let id = match lit.command() {
+                Command::DeclareLiteral { id, .. } => id.clone(),
+                _ => unreachable!("Build symbol for literal declaring expressions"),
+            };
+            match table.entry(id) {
+                // The expression has been created
+                hash_map::Entry::Occupied(_) => {
+                    continue;
+                }
+                hash_map::Entry::Vacant(ent) => {
+                    ent.insert(addr);
+                }
+            }
+            addr += lit.len() as u64;
+            expressions.push(lit);
+        }
+        expressions.push(end);
+
+        Ok((table, expressions))
     }
 
-    fn parse(
+    fn build_objcodes(
         expressions: &[Expression],
-        symbol_table: &HashMap<&str, u64>,
+        symbol_table: &HashMap<String, u64>,
         start_addr: u64,
     ) -> Result<Vec<String>, &'a str> {
         let mut pc = start_addr;
         let mut ret = vec![];
         let mut base = None;
 
-        for expr in &expressions[1..expressions.len() - 1] {
+        for (line, expr) in expressions[1..expressions.len() - 1].iter().enumerate() {
             pc += expr.len() as u64;
 
             match expr.command() {
                 Command::Directive(directive) => match directive {
-                    Directive::ResB | Directive::ResW => ret.push("".to_string()),
+                    Directive::ResB | Directive::ResW | Directive::LtOrg => {
+                        ret.push("".to_string())
+                    }
                     Directive::Byte => {
                         let operand = expr.operand().unwrap();
                         match operand {
-                            Operand::Literal(lit) => ret.push(lit.opcode()),
+                            Operand::Literal(lit) => ret.push(lit.objcode()),
                             _ => return Err("Invalid expression. BYTE should follows literal"),
                         }
                     }
                     Directive::Word => {
                         let operand = expr.operand().unwrap();
-                        let Operand::Literal(Literal::Integer(n)) = operand  else {
+                        let Operand::Literal(Literal::Integer(n)) = operand else {
                             return Err("Invalid expression. WORD should follows integer")
                         };
                         ret.push(format!("{n:06X}"));
@@ -72,6 +137,7 @@ impl<'a> SicXeProgram<'a> {
                         let operand = expr.operand().unwrap();
                         match operand {
                             Operand::Symbol(sym) => {
+                                let sym = *sym;
                                 let Some(addr) = symbol_table.get(sym) else {
                                     return Err("Symbol not found");
                                 };
@@ -81,20 +147,24 @@ impl<'a> SicXeProgram<'a> {
                             _ => return Err("Invalid expression. BASE should follows symbol"),
                         }
                     }
-                    Directive::Start | Directive::End => return Err("Invalid program"),
-                    _ => todo!(),
+                    Directive::Start | Directive::End => {
+                        eprintln!("{}", line + 1);
+                        return Err(
+                        "Invalid program. START or END should not appear in the middle of program",
+                    );
+                    }
                 },
                 Command::Mnemonic(mnemonic) => {
                     let mut code = 0u32;
-                    let opcode = mnemonic.opcode() as u32;
+                    let objcode = mnemonic.opcode() as u32;
 
                     match mnemonic.format() {
                         Format::One => {
-                            code |= opcode << 16;
+                            code |= objcode << 16;
                             ret.push(format!("{: <02X}", code));
                         }
                         Format::Two => {
-                            code |= opcode << 8;
+                            code |= objcode << 8;
                             let (r1, r2) = match expr.operand().unwrap() {
                                 Operand::RegisterPair((r1, r2)) => (r1, r2),
                                 Operand::Register(reg) => (reg, &Register::A),
@@ -106,9 +176,9 @@ impl<'a> SicXeProgram<'a> {
                         Format::ThreeAndFour => {
                             let is_format_4 = expr.is_set(Flag::E);
                             if is_format_4 {
-                                code |= (opcode & 0xfc) << 24;
+                                code |= (objcode & 0xfc) << 24;
                             } else {
-                                code |= (opcode & 0xfc) << 16;
+                                code |= (objcode & 0xfc) << 16;
                             }
 
                             let mut stat = expr.stat();
@@ -122,7 +192,7 @@ impl<'a> SicXeProgram<'a> {
                                             _ => return Err("Register"),
                                         },
                                         Operand::Symbol(sym) => {
-                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            let Some(address) = symbol_table.get(*sym) else { return Err("Symbol not found") };
                                             if is_format_4 {
                                                 (*address as u32) & ((1u32 << 20) - 1) as u32
                                             } else {
@@ -141,7 +211,7 @@ impl<'a> SicXeProgram<'a> {
                                     // indirect addressing
                                     match expr.operand().unwrap() {
                                         Operand::Symbol(sym) => {
-                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            let Some(address) = symbol_table.get(*sym) else { return Err("Symbol not found") };
                                             if is_format_4 {
                                                 (*address as u32) & ((1u32 << 20) - 1) as u32
                                             } else {
@@ -160,7 +230,7 @@ impl<'a> SicXeProgram<'a> {
                                     stat |= Flag::N | Flag::I;
                                     match expr.operand().unwrap() {
                                         Operand::Symbol(sym) => {
-                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            let Some(address) = symbol_table.get(*sym) else { return Err("Symbol not found") };
                                             if is_format_4 {
                                                 (*address as u32) & ((1u32 << 20) - 1) as u32
                                             } else {
@@ -181,10 +251,24 @@ impl<'a> SicXeProgram<'a> {
                                         Operand::Literal(lit) => match lit {
                                             Literal::Integer(n) => *n as u32,
                                             Literal::Byte(b) => *b as u32,
-                                            _ => todo!(),
+                                            // TODO: Check whether string can be used here
+                                            _ => panic!(),
                                         },
                                         Operand::Symbol(sym) => {
-                                            let Some(address) = symbol_table.get(sym) else { return Err("Symbol not found") };
+                                            let Some(address) = symbol_table.get(*sym) else { return Err("Symbol not found") };
+                                            if is_format_4 {
+                                                (*address as u32) & ((1u32 << 20) - 1) as u32
+                                            } else {
+                                                let (bias, flag) =
+                                                    Self::get_addr(*address, pc, base);
+                                                if let Some(flag) = flag {
+                                                    stat |= flag;
+                                                }
+                                                (bias as u32) & ((1u32 << 12) - 1) as u32
+                                            }
+                                        }
+                                        Operand::DeclareLiteral { id, .. } => {
+                                            let Some(address) = symbol_table.get(id) else { return Err("Symbol not found") };
                                             if is_format_4 {
                                                 (*address as u32) & ((1u32 << 20) - 1) as u32
                                             } else {
@@ -213,6 +297,7 @@ impl<'a> SicXeProgram<'a> {
                         }
                     }
                 }
+                Command::DeclareLiteral { lit, .. } => ret.push(lit.objcode()),
             }
         }
 
@@ -252,7 +337,7 @@ impl<'a> SicXeProgram<'a> {
         &self.end
     }
 
-    pub fn symbol_table(&self) -> &HashMap<&'a str, u64> {
+    pub fn symbol_table(&self) -> &HashMap<String, u64> {
         &self.symbol_table
     }
 
@@ -265,13 +350,24 @@ impl<'a> SicXeProgram<'a> {
 
         let mut addr = self.header().start_addr();
         let mut line = 1;
+        // START
+        writeln!(f, "{:>04}  {:>8X}  {}", line, addr, self.expressions()[0])?;
+        line += 1;
         for text in self.texts() {
-            for (expr, opcode) in text.expressions() {
-                writeln!(f, "{:>04}  {:>8X}  {}  {:>}", line, addr, expr, opcode)?;
+            for (expr, objcode) in text.expressions() {
+                writeln!(f, "{:>04}  {:>8X}  {}  {:>}", line, addr, expr, objcode)?;
                 addr += expr.len() as u64;
                 line += 1;
             }
         }
+        // END
+        writeln!(
+            f,
+            "{:>04}  {: >8}  {}",
+            line,
+            "",
+            self.expressions().last().unwrap()
+        )?;
 
         Ok(())
     }
@@ -311,14 +407,18 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
             })?;
 
         let mut header = Header::try_from(expressions[0].clone())?;
-        let symbol_table = Self::build_symbol_table(&expressions, header.start_addr)?;
-        let opcodes = Self::parse(&expressions, &symbol_table, header.start_addr)?;
+        let (symbol_table, expressions) = Self::build_symbol_table(expressions, header.start_addr)
+            .map_err(|e| {
+                eprintln!("{e}");
+                "Build symbol table"
+            })?;
+        let objcodes = Self::build_objcodes(&expressions, &symbol_table, header.start_addr)?;
         // FIXME: build end
         let sym = match expressions.last().unwrap().operand().unwrap() {
             Operand::Symbol(sym) => sym,
             _ => panic!(),
         };
-        let start_addr = *symbol_table.get(sym).unwrap();
+        let start_addr = *symbol_table.get(*sym).unwrap();
         let end = End { start_addr };
 
         let mut sections = vec![];
@@ -329,8 +429,8 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
         let mut cur_addr = header.start_addr;
         let mut has_no_resv = false;
 
-        for i in 1..expressions.len() - 1 {
-            if cur_addr - cur_txt.start_addr + (expressions[i].len() as u64) > 0x1d && has_no_resv {
+        for (expr, objcode) in expressions[1..expressions.len() - 1].iter().zip(objcodes) {
+            if cur_addr - cur_txt.start_addr + (expr.len() as u64) > 0x1d && has_no_resv {
                 cur_txt.len = cur_addr - cur_txt.start_addr;
                 sections.push(cur_txt);
                 cur_txt = Text {
@@ -340,7 +440,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
                 has_no_resv = true;
             }
 
-            match expressions[i].command() {
+            match expr.command() {
                 Command::Directive(Directive::ResW) | Command::Directive(Directive::ResB) => {
                     if has_no_resv {
                         cur_txt.len = cur_addr - cur_txt.start_addr;
@@ -360,10 +460,8 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
                 }
             }
 
-            cur_txt
-                .expressions
-                .push((expressions[i].clone(), opcodes[i - 1].clone()));
-            cur_addr += expressions[i].len() as u64;
+            cur_txt.expressions.push((expr.clone(), objcode));
+            cur_addr += expr.len() as u64;
         }
 
         if !cur_txt.expressions.is_empty() {
@@ -402,8 +500,8 @@ impl<'a> Display for Text<'a> {
             start_addr, len, ..
         } = self;
         let mut str = String::new();
-        for (_, opcode) in &self.expressions {
-            str += opcode;
+        for (_, objcode) in &self.expressions {
+            str += objcode;
         }
         write!(f, "T{start_addr:<06X}{len:<02X}{str}")
     }
