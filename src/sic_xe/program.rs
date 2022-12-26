@@ -469,7 +469,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
             texts.push(cur_txt);
         }
 
-        header.len = cur_addr;
+        header.len = cur_addr - header.start_addr();
 
         Ok(Self {
             expressions,
