@@ -1,12 +1,12 @@
 use super::{
-    token::Register, Command, Directive, Expression, Flag, Format, Literal, Operand, ParseError,
+    record, token::Register, Command, Directive, Expression, Flag, Format, Literal, Operand,
+    ParseError,
 };
 use crate::Rule;
 use itertools::Itertools;
 use pest::iterators::Pair;
 use std::{
     collections::{hash_map, HashMap, VecDeque},
-    fmt::{Display, Formatter},
     io::{self, Write},
 };
 
@@ -14,9 +14,9 @@ use std::{
 pub struct SicXeProgram<'a> {
     expressions: Vec<Expression<'a>>,
     symbol_table: HashMap<String, u64>,
-    header: Header<'a>,
-    end: End,
-    texts: Vec<Text<'a>>,
+    header: record::Header<'a>,
+    end: record::End,
+    texts: Vec<record::Text<'a>>,
 }
 
 impl<'a> SicXeProgram<'a> {
@@ -325,15 +325,15 @@ impl<'a> SicXeProgram<'a> {
         &self.expressions
     }
 
-    pub(crate) fn texts(&self) -> &[Text] {
+    pub(crate) fn texts(&self) -> &[record::Text] {
         self.texts.as_ref()
     }
 
-    pub(crate) fn header(&self) -> &Header<'a> {
+    pub(crate) fn header(&self) -> &record::Header<'a> {
         &self.header
     }
 
-    pub(crate) fn end(&self) -> &End {
+    pub(crate) fn end(&self) -> &record::End {
         &self.end
     }
 
@@ -406,7 +406,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
                 "Failed to parse expressions."
             })?;
 
-        let mut header = Header::try_from(expressions[0].clone())?;
+        let mut header = record::Header::try_from(expressions[0].clone())?;
         let (symbol_table, expressions) = Self::build_symbol_table(expressions, header.start_addr)
             .map_err(|e| {
                 eprintln!("{e}");
@@ -419,10 +419,10 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
             _ => panic!(),
         };
         let start_addr = *symbol_table.get(*sym).unwrap();
-        let end = End { start_addr };
+        let end = record::End { start_addr };
 
-        let mut sections = vec![];
-        let mut cur_txt = Text {
+        let mut texts = vec![];
+        let mut cur_txt = record::Text {
             start_addr,
             ..Default::default()
         };
@@ -432,8 +432,8 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
         for (expr, objcode) in expressions[1..expressions.len() - 1].iter().zip(objcodes) {
             if cur_addr - cur_txt.start_addr + (expr.len() as u64) > 0x1d && has_no_resv {
                 cur_txt.len = cur_addr - cur_txt.start_addr;
-                sections.push(cur_txt);
-                cur_txt = Text {
+                texts.push(cur_txt);
+                cur_txt = record::Text {
                     start_addr: cur_addr,
                     ..Default::default()
                 };
@@ -444,8 +444,8 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
                 Command::Directive(Directive::ResW) | Command::Directive(Directive::ResB) => {
                     if has_no_resv {
                         cur_txt.len = cur_addr - cur_txt.start_addr;
-                        sections.push(cur_txt);
-                        cur_txt = Text {
+                        texts.push(cur_txt);
+                        cur_txt = record::Text {
                             start_addr: cur_addr,
                             ..Default::default()
                         };
@@ -466,7 +466,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
 
         if !cur_txt.expressions.is_empty() {
             cur_txt.len = cur_addr - cur_txt.start_addr;
-            sections.push(cur_txt);
+            texts.push(cur_txt);
         }
 
         header.len = cur_addr;
@@ -476,90 +476,7 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
             symbol_table,
             header,
             end,
-            texts: sections,
-        })
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Text<'a> {
-    expressions: Vec<(Expression<'a>, String)>,
-    start_addr: u64,
-    len: u64,
-}
-
-impl<'a> Text<'a> {
-    pub fn expressions(&self) -> &[(Expression<'a>, String)] {
-        &self.expressions
-    }
-}
-
-impl<'a> Display for Text<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let Self {
-            start_addr, len, ..
-        } = self;
-        let mut str = String::new();
-        for (_, objcode) in &self.expressions {
-            str += objcode;
-        }
-        write!(f, "T{start_addr:<06X}{len:<02X}{str}")
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct End {
-    start_addr: u64,
-}
-
-impl Display for End {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "E{:06X}", self.start_addr)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Header<'a> {
-    program_name: &'a str,
-    start_addr: u64,
-    len: u64,
-}
-
-impl<'a> Header<'a> {
-    pub(crate) fn start_addr(&self) -> u64 {
-        self.start_addr
-    }
-}
-
-impl<'a> Display for Header<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let Self {
-            program_name,
-            start_addr,
-            len,
-        } = self;
-        write!(f, "H{program_name:6}{start_addr:06X}{len:06X}")
-    }
-}
-
-impl<'a> TryFrom<Expression<'a>> for Header<'a> {
-    type Error = &'a str;
-
-    fn try_from(expr: Expression<'a>) -> Result<Self, Self::Error> {
-        if !matches!(expr.command(), Command::Directive(Directive::Start)) {
-            return Err("Input should be a START directive");
-        }
-        let Some(Operand::Literal(Literal::Integer(start_addr))) = expr.operand() else {
-            return Err("Invalid literal. Expect a integer");
-        };
-        let Some(program_name) = expr.label() else {
-            return Err("Missing program name");
-        };
-
-        Ok(Self {
-            program_name,
-            start_addr: u64::from_str_radix(&start_addr.to_string(), 16).unwrap(),
-            len: 0,
+            texts,
         })
     }
 }

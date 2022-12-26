@@ -2,6 +2,7 @@ mod command;
 mod error;
 mod expression;
 mod program;
+mod record;
 mod token;
 
 pub use command::{Command, Directive, Format};
