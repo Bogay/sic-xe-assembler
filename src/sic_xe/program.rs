@@ -66,23 +66,23 @@ impl<'a> SicXeProgram<'a> {
                         let Operand::Literal(Literal::Integer(n)) = operand  else {
                             return Err("Invalid expression. WORD should follows integer")
                         };
-                        ret.push(format!("{n:04X}"));
+                        ret.push(format!("{n:06X}"));
                     }
                     Directive::Base => {
                         let operand = expr.operand().unwrap();
                         match operand {
                             Operand::Symbol(sym) => {
-                                if let Some(addr) = symbol_table.get(sym) {
-                                    base = Some(*addr);
-                                    ret.push("".to_string());
-                                } else {
+                                let Some(addr) = symbol_table.get(sym) else {
                                     return Err("Symbol not found");
-                                }
+                                };
+                                base = Some(*addr);
+                                ret.push("".to_string());
                             }
                             _ => return Err("Invalid expression. BASE should follows symbol"),
                         }
                     }
                     Directive::Start | Directive::End => return Err("Invalid program"),
+                    _ => todo!(),
                 },
                 Command::Mnemonic(mnemonic) => {
                     let mut code = 0u32;
