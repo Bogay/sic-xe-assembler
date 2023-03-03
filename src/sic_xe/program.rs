@@ -391,15 +391,8 @@ impl<'a> TryFrom<Pair<'a, Rule>> for SicXeProgram<'a> {
 
         let expressions = value
             .into_inner()
-            .filter(|pair| match pair.as_rule() {
-                Rule::Expression => true,
-                Rule::EOI => false,
-                _ => unreachable!("Parse expression"),
-            })
-            .map(|pair| match pair.as_rule() {
-                Rule::Expression => Expression::try_from(pair),
-                _ => unreachable!("Parse expression"),
-            })
+            .filter(|pair| matches!(pair.as_rule(), Rule::Expression))
+            .map(Expression::try_from)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| {
                 eprintln!("{err}");
